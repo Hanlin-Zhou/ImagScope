@@ -19,21 +19,31 @@ def center_align_images(img1, img2):
     return center_pad(img1, h, w), center_pad(img2, h, w)
 
 # Apply FFT transform with optional individual frequency inspection
-def apply_fft(image, eps, mode, x_offset, y_offset, window_size):
+def apply_fft(image, eps, mode, min_radius_ratio, max_radius_ratio):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     f = np.fft.fft2(gray)
     fshift = np.fft.fftshift(f)
+
     if mode == "Full FFT":
         mag = 20 * np.log(np.abs(fshift) + eps)
         return cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
     else:
         h, w = gray.shape
         cx, cy = w // 2, h // 2
-        x = cx + x_offset
-        y = cy + y_offset
+        yy, xx = np.ogrid[:h, :w]
+        dist = np.sqrt((xx - cx)**2 + (yy - cy)**2)
+        max_dist = np.sqrt((cx)**2 + (cy)**2)  # max radius from center to corner
+
+        # Convert ratios to pixel distances
+        min_r = min_radius_ratio * max_dist
+        max_r = max_radius_ratio * max_dist
+
+        # Create a circular band-pass mask
+        mask = (dist >= min_r) & (dist <= max_r)
         fshift_masked = np.zeros_like(fshift, dtype=complex)
-        hw = window_size // 2
-        fshift_masked[y - hw:y + hw + 1, x - hw:x + hw + 1] = fshift[y - hw:y + hw + 1, x - hw:x + hw + 1]
+        fshift_masked[mask] = fshift[mask]
+
         f_ishift = np.fft.ifftshift(fshift_masked)
         reconstructed = np.fft.ifft2(f_ishift)
         reconstructed_img = np.abs(reconstructed)
@@ -64,10 +74,10 @@ def apply_custom_kernel(image, kernel_vals):
     kernel = np.array(kernel_vals, dtype=np.float32)
     return cv2.filter2D(gray, -1, kernel)
 
-def analyze(img1, img2, filter_type, eps, mode, x_offset, y_offset, window_size, colormap, ksize, kernel_vals, display_choice):
+def analyze(img1, img2, filter_type, eps, mode, min_radius_ratio, max_radius_ratio, colormap, ksize, kernel_vals, display_choice):
     def apply_filter(img):
         if filter_type == "FFT Magnitude":
-            return apply_fft(img, eps, mode, x_offset, y_offset, window_size)
+            return apply_fft(img, eps, mode, min_radius_ratio, max_radius_ratio,)
         elif filter_type == "Saturation Map":
             return apply_saturation_map(img, colormap)
         elif filter_type == "Edge Detection (Sobel)":
@@ -107,10 +117,10 @@ with gr.Blocks() as demo:
 
     with gr.Row():
         # Left column: upload + filter controls
-        with gr.Column(scale=1):
+        with gr.Column(scale=3):
             with gr.Row():
-                img1 = gr.Image(type="numpy", label="Image 1", height=220)
-                img2 = gr.Image(type="numpy", label="Image 2 (optional)", height=220)
+                img1 = gr.Image(type="numpy", label="Image 1")
+                img2 = gr.Image(type="numpy", label="Image 2 (optional)")
             filter_type = gr.Radio([
                 "FFT Magnitude",
                 "Saturation Map",
@@ -121,11 +131,10 @@ with gr.Blocks() as demo:
             label="Filter Type")
 
             with gr.Column(visible=True) as fft_group:
-                eps = gr.Slider(0.1, 10.0, value=1.0, label="Log scale epsilon")
                 mode = gr.Radio(["Full FFT", "Individual Frequency"], value="Full FFT", label="FFT Mode")
-                x_offset = gr.Slider(-256, 256, value=0, label="Horizontal Frequency Offset")
-                y_offset = gr.Slider(-256, 256, value=0, label="Vertical Frequency Offset")
-                window_size = gr.Slider(1, 15, step=2, value=5, label="Frequency Window Size")
+                eps = gr.Slider(0.1, 10.0, value=1.0, label="Log scale epsilon")
+                min_radius_ratio = gr.Slider(0.0, 1.0, step=0.001, value=0.0, label="Min Radius Ratio (Inner)")
+                max_radius_ratio = gr.Slider(0.0, 1.0, step=0.001, value=0.2, label="Max Radius Ratio (Outer)")
 
             with gr.Column(visible=False) as sat_group:
                 colormap = gr.Dropdown(["JET", "BONE", "None"], value="JET", label="Colormap")
@@ -164,7 +173,7 @@ with gr.Blocks() as demo:
 
 
     filter_type.change(fn=toggle_visibility, inputs=filter_type, outputs=[fft_group, sat_group, ksize_group, custom_group])
-    inputs = [img1, img2, filter_type, eps, mode, x_offset, y_offset, window_size, colormap, ksize, kernel_vals, display_choice]
+    inputs = [img1, img2, filter_type, eps, mode, min_radius_ratio, max_radius_ratio, colormap, ksize, kernel_vals, display_choice]
     outputs = [out_display, slider_display]
     for inp in inputs:
         inp.change(fn=analyze, inputs=inputs, outputs=outputs)
